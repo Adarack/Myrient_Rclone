@@ -1,0 +1,497 @@
+#!/bin/bash
+
+################################################################################
+# 🎮 MYRIENT SYNC SCRIPT - MODULAR VERSION
+################################################################################
+# This script syncs ROMs, BIOS, and disc keys from Myrient using rclone.
+# Modular version: Extracts repetitive logic into reusable functions.
+################################################################################
+
+# ┌───────────────────────────────┐
+# │         🔧 SETTINGS           │
+# └───────────────────────────────┘
+
+# Configuration Settings
+DRY_RUN=false              # If true, performs a dry run (no actual file transfers)
+TIMER=true                 # If true, shows the script duration at the end
+ONLY_NEW=false             # If true, skips files that already exist locally
+FORCE_OVERWRITES=false     # If true, overwrites existing files regardless of timestamps
+IGNORE_TIMES=true          # If True, force rclone to re-evaluate all files (disables timestamp-based skip)
+SKIP_VERIFIED_FILES=false  # If true, skips rechecking files that were already verified
+# File Verification Settings
+VERIFY_POST_SYNC=true      # If true, runs post-sync verification using rclone check
+USE_CHECKSUM=true          # If true, uses --checksum (hash check); if false, uses --size-only
+SHOW_HASHES=true           # If true, shows hash next to each file during sync/verification
+CREATE_PER_FILE_MD5=true   # If true, generates a .md5 file next to each downloaded file
+# Retry Settings
+MAX_RETRY_COUNT=3          # Number of times to retry a failed verification before giving up
+RETENTION_DAYS=30          # How many days to keep old log files
+CREATE_RETRY_SCRIPTS=true  # If true, saves failed paths into retry scripts
+
+# ┌────────────────────────────────────┐
+# │             📁 PATHS               │
+# └────────────────────────────────────┘
+
+GAMES_LOCAL_PATH="/mnt/user/Games/myrient"  # Local destination directory for all synced content
+REMOTE_NAME="myrient"    
+
+# ┌────────────────────────────────────┐
+# │       🚀 PERFORMANCE TUNING        │
+# └────────────────────────────────────┘
+
+STREAMS=4               # Number of parallel streams per file (multi-threaded transfers)
+CUTOFF=200              # File size (in MiB) cutoff to enable multi-threaded transfers
+TRANSFERS=4             # Number of files to transfer in parallel
+CHECKERS=8              # Number of checkers to run in parallel (for verification)
+RETRIES=10              # Number of retry attempts for transfers that fail
+LOW_LEVEL_RETRIES=10    # Number of retries for low-level errors like network issues
+
+# ┌──────────────────────────────────────────────┐
+# │          🔍 INCLUDE/EXCLUDE FILTERS          │
+# └──────────────────────────────────────────────┘
+
+# Files or folders that match these patterns WILL be included in the sync.
+# These typically target USA/NTSC/World region ROMs.
+INCLUDES=("*USA*" "*World*" "*NTSC*")
+
+EXCLUDES=("*Console*" "*NFL*" "*NHL*" "*Tennis*" "*Hockey*" "*Volleyball*" "*Madden*"
+          "*FootBall*" "*Golf*" "*NCAA*" "*Fishing*" "*NBA*" "*Basketball*"
+          "*BaseBall*" "*MLB*" "*FIFA*" "*Soccer*" "*Bowling*"
+          )
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                      🎮 ROM SYSTEMS TO SYNC                         │
+# └─────────────────────────────────────────────────────────────────────┘
+# ➤ These are the game systems you want to sync.
+# ➤ Format: "myrient_folder_path:::local_folder"
+#     - Left side: remote path on myrient
+#     - Right side: relative destination on your system
+#
+# 💡 Tip: Use INCLUDE/EXCLUDE filters above to fine-tune your selections.
+
+SYSTEMS=(
+# ▼ UNCOMMENT BELOW OR MAKE YOUR OWN FROM MYRIENT ▼
+
+# -----------------------------
+# 📦 INTERNET ARCHIVE COLLECTIONS
+# -----------------------------
+
+  "Internet Archive/rompacker/mame-chds-roms-extras-complete/:::Internet_Archive/rompacker/mame-chds-roms-extras-complete"
+  
+# -----------------------------
+# 📦 OFFICIAL NO-INTRO COLLECTIONS
+# -----------------------------
+
+  "No-Intro/Arcade - PC-based/:::no-intro/arcade_pc_based/roms"
+  "No-Intro/Atari - 2600/:::no-intro/atari_2600/roms"
+  "No-Intro/Atari - 5200/:::no-intro/atari_5200/roms"
+  "No-Intro/Atari - 7800/:::no-intro/atari_7800/roms"
+  "No-Intro/Atari - 8-bit Family/:::no-intro/atari_8_bit_family/roms"
+#   "No-Intro/Atari - Jaguar (ABS)/:::no-intro/atari_jaguar/abs"
+#   "No-Intro/Atari - Jaguar (COF)/:::no-intro/atari_jaguar/cof"
+#   "No-Intro/Atari - Jaguar (J64)/:::no-intro/atari_jaguar/j64"
+#   "No-Intro/Atari - Jaguar (JAG)/:::no-intro/atari_jaguar/jag"
+  "No-Intro/Atari - Jaguar (ROM)/:::no-intro/atari_jaguar/rom"
+#   "No-Intro/Atari - Lynx (BLL)/:::no-intro/atari_lynx/bll"
+#   "No-Intro/Atari - Lynx (LNX)/:::no-intro/atari_lynx/lnx"
+#   "No-Intro/Atari - Lynx (LYX)/:::no-intro/atari_lynx/lyx"
+#   "No-Intro/Atari - ST/:::no-intro/atari_st/roms"
+#   "No-Intro/Atari - ST (Flux)/:::no-intro/atari_st_flux/roms"
+  "No-Intro/Coleco - ColecoVision/:::no-intro/coleco_colecovision/roms"
+  "No-Intro/Commodore - Amiga/:::no-intro/commodore_amiga/roms"
+#   "No-Intro/Commodore - Amiga (Bitstream)/:::no-intro/commodore_amiga_bitstream/roms"
+#   "No-Intro/Commodore - Amiga (Flux)/:::no-intro/commodore_amiga_flux/roms"
+  "No-Intro/Commodore - Commodore 64/:::no-intro/commodore_commodore_64/roms"
+  "No-Intro/Commodore - Commodore 64 (PP)/:::no-intro/commodore_commodore_64/pp"
+  "No-Intro/Commodore - Commodore 64 (Tapes)/:::no-intro/commodore_commodore_64/tapes"
+  "No-Intro/Commodore - Plus-4/:::no-intro/commodore_plus_4/roms"
+  "No-Intro/Commodore - VIC-20/:::no-intro/commodore_vic_20/roms"
+  "No-Intro/Microsoft - Xbox 360 (Digital)/:::no-intro/microsoft_xbox_360_digital/roms"
+#   "No-Intro/Nintendo - Game Boy/:::no-intro/nintendo_game_boy/roms"
+#   "No-Intro/Nintendo - Game Boy (Private)/:::no-intro/nintendo_game_boy_private/roms"
+#   "No-Intro/Nintendo - Game Boy Advance/:::no-intro/nintendo_game_boy_advance/roms"
+#   "No-Intro/Nintendo - Game Boy Advance (Multiboot)/:::no-intro/nintendo_game_boy_advance_multiboot/roms"
+#   "No-Intro/Nintendo - Game Boy Advance (Play-Yan)/:::no-intro/nintendo_game_boy_advance_play_yan/roms"
+#   "No-Intro/Nintendo - Game Boy Color/:::no-intro/nintendo_game_boy_color/roms"
+#   "No-Intro/Nintendo - Kiosk Video Compact Flash (CardImage)/:::no-intro/nintendo_kiosk_video_compact_flash_cardimage/roms"
+#   "No-Intro/Nintendo - Kiosk Video Compact Flash (Extracted)/:::no-intro/nintendo_kiosk_video_compact_flash_extracted/roms"
+#   "No-Intro/Nintendo - New Nintendo 3DS (Decrypted)/:::no-intro/nintendo_new_nintendo_3ds_decrypted/roms"
+#   "No-Intro/Nintendo - New Nintendo 3DS (Digital) (Deprecated)/:::no-intro/nintendo_new_nintendo_3ds_digital_deprecated/roms"
+#   "No-Intro/Nintendo - Nintendo 3DS (Decrypted)/:::no-intro/nintendo_nintendo_3ds_decrypted/roms"
+#   "No-Intro/Nintendo - Nintendo 3DS (Digital) (CDN)/:::no-intro/nintendo_nintendo_3ds_digital_cdn/roms"
+#   "No-Intro/Nintendo - Nintendo 3DS (Digital) (Pre-Install)/:::no-intro/nintendo_nintendo_3ds_digital_pre_install/roms"
+#   "No-Intro/Nintendo - Nintendo 3DS (Encrypted)/:::no-intro/nintendo_nintendo_3ds_encrypted/roms"
+  "No-Intro/Nintendo - Nintendo 64 (BigEndian)/:::no-intro/nintendo_nintendo_64_bigendian/roms"
+  "No-Intro/Nintendo - Nintendo 64 (ByteSwapped)/:::no-intro/nintendo_nintendo_64_byteswapped/roms"
+  "No-Intro/Nintendo - Nintendo 64DD/:::no-intro/nintendo_nintendo_64dd/roms"
+#   "No-Intro/Nintendo - Nintendo DS (DSvision SD cards)/:::no-intro/nintendo_nintendo_ds_dsvision_sd_cards/roms"
+#   "No-Intro/Nintendo - Nintendo DS (Decrypted)/:::no-intro/nintendo_nintendo_ds_decrypted/roms"
+#   "No-Intro/Nintendo - Nintendo DS (Download Play)/:::no-intro/nintendo_nintendo_ds_download_play/roms"
+#   "No-Intro/Nintendo - Nintendo DSi (Decrypted)/:::no-intro/nintendo_nintendo_dsi_decrypted/roms"
+#   "No-Intro/Nintendo - Nintendo DSi (Digital)/:::no-intro/nintendo_nintendo_dsi_digital/roms"
+#   "No-Intro/Nintendo - Nintendo DSi (Digital) (CDN) (Decrypted)/:::no-intro/nintendo_nintendo_dsi_digital_cdn_decrypted/roms"
+#   "No-Intro/Nintendo - Nintendo DSi (Encrypted)/:::no-intro/nintendo_nintendo_dsi_encrypted/roms"
+  "No-Intro/Nintendo - Nintendo Entertainment System (Headered)/:::no-intro/nintendo_nintendo_entertainment_system_headered/roms"
+  "No-Intro/Nintendo - Nintendo GameCube (NPDP Carts)/:::no-intro/nintendo_nintendo_gamecube_npdp_carts/roms"
+#   "No-Intro/Nintendo - Pokemon Mini/:::no-intro/nintendo_pokemon_mini/roms"
+  "No-Intro/Nintendo - Super Nintendo Entertainment System/:::no-intro/nintendo_super_nintendo_entertainment_system/roms"
+#   "No-Intro/Nintendo - Virtual Boy/:::no-intro/nintendo_virtual_boy/roms"
+  "No-Intro/Nintendo - Wii (Digital) (CDN)/:::no-intro/nintendo_wii_digital_cdn/roms"
+  "No-Intro/Nintendo - Wii U (Digital) (CDN)/:::no-intro/nintendo_wii_u_digital_cdn/roms"
+  "No-Intro/Nintendo - amiibo/:::no-intro/nintendo_amiibo/roms"
+  "No-Intro/Non-Redump - Atari - Atari Jaguar CD/:::no-intro/non_redump_atari_atari_jaguar_cd/roms"
+  "No-Intro/Non-Redump - Microsoft - Xbox/:::no-intro/non_redump_microsoft_xbox/roms"
+  "No-Intro/Non-Redump - Microsoft - Xbox 360/:::no-intro/non_redump_microsoft_xbox_360/roms"
+  "No-Intro/Non-Redump - Nintendo - Nintendo GameCube/:::no-intro/non_redump_nintendo_nintendo_gamecube/roms"
+  "No-Intro/Non-Redump - Nintendo - Wii/:::no-intro/non_redump_nintendo_wii/roms"
+  "No-Intro/Non-Redump - Nintendo - Wii U/:::no-intro/non_redump_nintendo_wii_u/roms"
+  "No-Intro/Non-Redump - Panasonic - 3DO Interactive Multiplayer/:::no-intro/non_redump_panasonic_3do_interactive_multiplayer/roms"
+  "No-Intro/Non-Redump - Philips - CD-i/:::no-intro/non_redump_philips_cd_i/roms"
+  "No-Intro/Non-Redump - Sega - Dreamcast/:::no-intro/non_redump_sega_dreamcast/roms"
+  "No-Intro/Non-Redump - Sega - Sega Mega CD + Sega CD/:::no-intro/non_redump_sega_sega_mega_cd_sega_cd/roms"
+  "No-Intro/Non-Redump - Sega - Sega Saturn/:::no-intro/non_redump_sega_sega_saturn/roms"
+  "No-Intro/Non-Redump - Sony - PlayStation/:::no-intro/non_redump_sony_playstation/roms"
+  "No-Intro/Non-Redump - Sony - PlayStation 2/:::no-intro/non_redump_sony_playstation_2/roms"
+  "No-Intro/Non-Redump - Sony - PlayStation Portable/:::no-intro/non_redump_sony_playstation_portable/roms"
+  "No-Intro/Sega - 32X/:::no-intro/sega_32x/roms"
+  "No-Intro/Sega - Beena/:::no-intro/sega_been a/roms"
+  "No-Intro/Sega - Dreamcast (Visual Memory Unit)/:::no-intro/sega_dreamcast_visual_memory_unit/roms"
+  "No-Intro/Sega - Game Gear/:::no-intro/sega_game_gear/roms"
+  "No-Intro/Sega - Master System - Mark III/:::no-intro/sega_master_system_mark_iii/roms"
+  "No-Intro/Sega - Mega Drive - Genesis/:::no-intro/sega_mega_drive_genesis/roms"
+  "No-Intro/Sega - SG-1000/:::no-intro/sega_sg_1000/roms"
+  "No-Intro/Sony - PlayStation (PS one Classics) (PSN)/:::no-intro/sony_playstation_ps_one_classics_psn/roms"
+  "No-Intro/Sony - PlayStation 3 (PSN) (Content)/:::no-intro/sony_playstation_3_psn_content/roms"
+  "No-Intro/Sony - PlayStation 3 (PSN) (Updates)/:::no-intro/sony_playstation_3_psn_updates/roms"
+  "No-Intro/Sony - PlayStation Mobile (PSN)/:::no-intro/sony_playstation_mobile_psn/roms"
+  "No-Intro/Sony - PlayStation Portable (PSN) (Encrypted)/:::no-intro/sony_playstation_portable_psn_encrypted/roms"
+  "No-Intro/Sony - PlayStation Vita (PSN) (Content)/:::no-intro/sony_playstation_vita_psn_content/roms"
+  "No-Intro/Sony - PlayStation Vita (PSN) (Updates)/:::no-intro/sony_playstation_vita_psn_updates/roms"
+
+# -----------------------------
+# 📦 UNOFFICIAL NO-INTRO COLLECTIONS
+# -----------------------------
+
+  "No-Intro/Unofficial- Microsoft - Xbox 360 (Title Updates)/:::no-intro/unofficial_microsoft_xbox_360_title_updates/roms"
+  "No-Intro/Unofficial- Nintendo - Nintendo 3DS (Digital) (Updates and DLC) (Decrypted)/:::no-intro/unofficial_nintendo_nintendo_3ds_digital_updates_and_dlc_decrypted/roms"
+  "No-Intro/Unofficial- Nintendo - Wii (Digital) (Deprecated) (WAD)/:::no-intro/unofficial_nintendo_wii_digital_deprecated_wad/roms"
+  "No-Intro/Unofficial- Nintendo - Wii (Digital) (Split DLC) (Deprecated) (WAD)/:::no-intro/unofficial_nintendo_wii_digital_split_dlc_deprecated_wad/roms"
+  "No-Intro/Unofficial- Nintendo - Wii U (Digital) (Deprecated)/:::no-intro/unofficial_nintendo_wii_u_digital_deprecated/roms"
+  "No-Intro/Unofficial- Sony - PlayStation 3 (PSN) (Decrypted)/:::no-intro/unofficial_sony_playstation_3_psn_decrypted/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Portable (PSN) (Decrypted)/:::no-intro/unofficial_sony_playstation_portable_psn_decrypted/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Portable (PSX2PSP)/:::no-intro/unofficial_sony_playstation_portable_psx2psp/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Vita (PSN) (Decrypted) (NoNpDrm)/:::no-intro/unofficial_sony_playstation_vita_psn_decrypted_nonpdrm/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Vita (PSN) (Decrypted) (VPK)/:::no-intro/unofficial_sony_playstation_vita_psn_decrypted_vpk/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Vita (PSVgameSD)/:::no-intro/unofficial_sony_playstation_vita_psvgamesd/roms"
+  "No-Intro/Unofficial- Sony - PlayStation Vita (VPK)/:::no-intro/unofficial_sony_playstation_vita_vpk/roms"
+
+# -----------------------------
+# 📦 OFFICIAL REDUMP COLLECTIONS
+# -----------------------------
+
+#   "Redump/Arcade - Hasbro - VideoNow/:::redump/arcade_hasbro_videonow/roms"
+#   "Redump/Arcade - Hasbro - VideoNow Color/:::redump/arcade_hasbro_videonow_color/roms"
+#   "Redump/Arcade - Hasbro - VideoNow Jr/:::redump/arcade_hasbro_videonow_jr/roms"
+#   "Redump/Arcade - Hasbro - VideoNow XP/:::redump/arcade_hasbro_videonow_xp/roms"
+#   "Redump/Arcade - Konami - FireBeat/:::redump/arcade_konami_firebeat/roms"
+#   "Redump/Arcade - Konami - M2/:::redump/arcade_konami_m2/roms"
+#   "Redump/Arcade - Konami - System 573/:::redump/arcade_konami_system_573/roms"
+#   "Redump/Arcade - Konami - System GV/:::redump/arcade_konami_system_gv/roms"
+#   "Redump/Arcade - Konami - e-Amusement/:::redump/arcade_konami_e_amusement/roms"
+#   "Redump/Arcade - Namco - Sega - Nintendo - Triforce/:::redump/arcade_namco_sega_nintendo_triforce/roms"
+#   "Redump/Arcade - Namco - Sega - Nintendo - Triforce - GDI Files/:::redump/arcade_namco_sega_nintendo_triforce_gdi_files/roms"
+#   "Redump/Arcade - Namco - System 246/:::redump/arcade_namco_system_246/roms"
+#   "Redump/Arcade - Sega - Chihiro/:::redump/arcade_sega_chihiro/roms"
+#   "Redump/Arcade - Sega - Chihiro - GDI Files/:::redump/arcade_sega_chihiro_gdi_files/roms"
+#   "Redump/Arcade - Sega - Lindbergh/:::redump/arcade_sega_lindbergh/roms"
+#   "Redump/Arcade - Sega - Naomi/:::redump/arcade_sega_naomi/roms"
+#   "Redump/Arcade - Sega - Naomi - GDI Files/:::redump/arcade_sega_naomi_gdi_files/roms"
+#   "Redump/Arcade - Sega - Naomi 2/:::redump/arcade_sega_naomi_2/roms"
+#   "Redump/Arcade - Sega - Naomi 2 - GDI Files/:::redump/arcade_sega_naomi_2_gdi_files/roms"
+#   "Redump/Arcade - Sega - RingEdge/:::redump/arcade_sega_ringedge/roms"
+#   "Redump/Arcade - Sega - RingEdge 2/:::redump/arcade_sega_ringedge_2/roms"
+#   "Redump/Atari - Jaguar CD Interactive Multimedia System/:::redump/atari_jaguar_cd_interactive_multimedia_system/roms"
+#   "Redump/Commodore - Amiga CD/:::redump/commodore_amiga_cd/roms"
+#   "Redump/Commodore - Amiga CD32/:::redump/commodore_amiga_cd32/roms"
+#   "Redump/Commodore - Amiga CDTV/:::redump/commodore_amiga_cdtv/roms"
+  "Redump/Microsoft - Xbox/:::redump/microsoft_xbox/iso"
+  "Redump/Microsoft - Xbox 360/:::redump/microsoft_xbox_360/iso"
+  "Redump/Nintendo - GameCube - NKit RVZ [zstd-19-128k]/:::redump/nintendo_gamecube/iso"
+  "Redump/Nintendo - Wii - NKit RVZ [zstd-19-128k]/:::redump/nintendo_wii/iso"
+  "Redump/Nintendo - Wii U - WUX/:::redump/nintendo_wii_u_wux/iso"
+  "Redump/Panasonic - 3DO Interactive Multiplayer/:::redump/panasonic_3do_interactive_multiplayer/iso"
+#   "Redump/Panasonic - M2/:::redump/panasonic_m2/iso"
+  "Redump/Philips - CD-i/:::redump/philips_cd_i/iso"
+  "Redump/PlayStation GameShark Updates/:::redump/sony_playstation/gameshark_updates"
+  "Redump/Sega - Dreamcast/:::redump/sega_dreamcast/iso"
+  "Redump/Sega - Dreamcast - GDI Files/:::redump/sega_dreamcast/gdi"
+  "Redump/Sega - Mega CD & Sega CD/:::redump/sega_mega_cd_sega_cd/iso"
+  "Redump/Sega - Saturn/:::redump/sega_saturn/iso"
+  "Redump/Sony - PlayStation/:::redump/sony_playstation/iso"
+#   "Redump/Sony - PlayStation - SBI Subchannels/:::redump/sony_playstation/sbi_subchannels"
+  "Redump/Sony - PlayStation 2/:::redump/sony_playstation_2/iso"
+  "Redump/Sony - PlayStation 3/:::redump/sony_playstation_3/iso"
+  "Redump/Sony - PlayStation Portable/:::redump/sony_playstation_portable/iso"
+
+# -----------------------------
+# 📦 MISC COLLECTIONS
+# -----------------------------
+
+#   "No-Intro/Unofficial- Video Game Documents (PDF)/:::no-intro/video_game_documents_pdf/"
+#   "No-Intro/Unofficial- Video Game Magazine Scans (CBZ)/:::no-intro/video_game_magazine_scans"
+#   "No-Intro/Unofficial- Video Game Magazine Scans (PDF)/:::no-intro/video_game_magazine_scans"
+#   "No-Intro/Unofficial- Video Game Magazine Scans (RAW)/:::no-intro/video_game_magazine_scans"
+#   "Redump/Random - Covers and Scans/:::Redump/Misc/Covers_Scans"
+#   "Redump/Random - Disc Tools/:::Redump/Misc/Disc_Tools"
+#   "Redump/Random - Logs/:::Redump/Misc/Logs"
+#   "Redump/Random - Applications/:::Redump/Misc/Apps"
+        )
+
+# 💿 SYSTEM BIOS TO SYNC
+# Format: "myrient_folder_path:::local_folder"
+# ➤ Copy/paste entries from below to include in BIOS_PATHS
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                 💿 SYSTEM BIOS/FIRMWARE TO SYNC                     │
+# └─────────────────────────────────────────────────────────────────────┘
+# ➤ BIOS files are essential for emulation on many systems.
+# ➤ Format: "myrient_folder_path:::local_folder"
+#     - Left side: remote path on myrient
+#     - Right side: relative destination on your system
+#
+# 💡 Tip: Enable the BIOS entries for any systems you've activated above.
+# 💡 These are pulled from multiple Myrient collections.
+
+BIOS_PATHS=(
+# ▼ UNCOMMENT BELOW OR MAKE YOUR OWN FROM MYRIENT ▼
+  "Internet Archive/chadmaster/mame-merged/BIOS/:::Internet_Archive/chadmaster/mame-merged/bios"
+  "Redump/Nintendo - GameCube - BIOS Images/:::Redump/gamecube/bios"
+  "Redump/Sony - PlayStation - BIOS Images/:::redump/sony_playstation/bios"
+  "Redump/Sony - PlayStation 2 - BIOS Images/:::redump/sony_playstation_2/bios"
+  "Redump/Nintendo - Wii U - Disc Keys/:::redump/nintendo_wii_u/disc_keys"
+  "Redump/Microsoft - Xbox - BIOS Images/:::redump/microsoft_xbox/bios"
+  "TOSEC-ISO/Sega/Dreamcast/Firmware/:::TOSEC-ISO/Sega/Dreamcast/Firmware"
+  "TOSEC-ISO/Sega/Saturn/Firmware/:::TOSEC-ISO/Sega/Saturn/Firmware"
+  "TOSEC-ISO/3DO/3DO Interactive Multiplayer/Firmware/:::TOSEC-ISO/3DO/3DO Interactive Multiplayer/Firmware"
+  "TOSEC-ISO/Philips/CD-i/Firmware/:::TOSEC-ISO/Philips/CD-i/Firmware"
+  "TOSEC-ISO/Sony/PlayStation 2/Firmware/:::TOSEC-ISO/Sony/PlayStation 2/Firmware"
+  "TOSEC/Nintendo/DS/Firmware/:::TOSEC/Nintendo/DS/Firmware"
+#   "TOSEC-ISO/SNK/Neo-Geo CD/Firmware/:::TOSEC-ISO/SNK/Neo-Geo CD/Firmware"
+#   "TOSEC/Radica/Arcade Legends & Play TV Legends/Firmware/:::TOSEC/Radica/Arcade Legends & Play TV Legends/Firmware"
+#   "TOSEC/Sharp/MZ-800 & MZ-1500/Firmware/:::TOSEC/Sharp/MZ-800 & MZ-1500/Firmware"
+  "No-Intro/Sega - Dreamcast (Visual Memory Unit)/:::No-Intro/sega_dreamcast_visual_memory_unit"
+            )
+
+# ┌─────────────────────────────────────────────────────────────────────┐
+# │                     🔑 DISC KEYS TO SYNC                            │
+# └─────────────────────────────────────────────────────────────────────┘
+# ➤ Disc keys are used to decrypt disc-based games (like PS3/Wii U titles).
+# ➤ Format: "myrient_folder_path:::local_folder"
+#     - Left side: path on myrient
+#     - Right side: relative destination on your local machine
+#
+# 💡 Tip: Enable the ones matching systems you plan to emulate (e.g. RPCS3 or Cemu).
+# 💡 These are small files but crucial for decryption in some emulators.
+
+DISC_KEYS_PATHS=(
+# ▼ UNCOMMENT BELOW OR MAKE YOUR OWN FROM MYRIENT ▼
+  "Redump/Nintendo - Wii U - Disc Keys/:::Redump/wiiu/disk_keys"
+  "Redump/Sony - PlayStation 3 - Disc Keys/:::redump/sony_playstation_3/disc_keys"
+  "Redump/Sony - PlayStation 3 - Disc Keys TXT/:::redump/sony_playstation_3/disc_keys_txt"
+                )
+
+# ANSI color codes
+GREEN="\e[32m"
+RED="\e[31m"
+RESET="\e[0m"
+
+# ┌───────────────────────────────┐
+# │         🧰 FUNCTIONS          │
+# └───────────────────────────────┘
+
+# 🛠️  build_rclone_flags
+# Dynamically builds the core rclone options based on the toggles set in the config.
+# Returns a string of flags to be reused across all sync operations.
+build_rclone_flags() {
+  local flags="--ignore-case --progress --http-no-head --create-empty-src-dirs \
+    --transfers=$TRANSFERS --checkers=$CHECKERS --retries=$RETRIES \
+    --multi-thread-streams=$STREAMS --multi-thread-cutoff=${CUTOFF}M \
+    --low-level-retries=$LOW_LEVEL_RETRIES --retries-sleep=10s --skip-links \
+    --use-server-modtime --copy-links"
+
+  [ "$DRY_RUN" = true ] && flags+=" --dry-run"
+  [ "$ONLY_NEW" = true ] && flags+=" --ignore-existing"
+  [ "$FORCE_OVERWRITES" = true ] && flags+=" --ignore-times"
+  [ "$IGNORE_TIMES" = true ] && flags+=" --ignore-times"
+
+  echo "$flags"
+}
+
+# 🧹 build_filters
+# Builds rclone --filter rules from the EXCLUDES and INCLUDES arrays.
+# Excludes everything by default, then selectively includes preferred patterns.
+build_filters() {
+  local filters=()
+  for pattern in "${EXCLUDES[@]}"; do filters+=(--filter="- $pattern"); done
+  for pattern in "${INCLUDES[@]}"; do filters+=(--filter="+ $pattern"); done
+  filters+=(--filter="- *")
+  echo "${filters[@]}"
+}
+
+# 📂 sync_path SRC DEST FLAGS
+# Core syncing logic for any path (BIOS, ROM, or disc key).
+# Displays a nice log header, runs rclone with provided flags, and triggers MD5 generation.
+sync_path() {
+  local SRC="$1"
+  local DEST="$2"
+  local FLAGS="$3"
+
+  mkdir -p "$DEST"
+  echo -e "\n▶ Syncing: $SRC\n⬇ To: $DEST"
+  if ionice -c2 -n7 nice -n10 rclone copy $FLAGS "$SRC" "$DEST" 2>&1 | tee -a "$LOG_FILE"; then
+    generate_md5 "$DEST"
+    return 0
+  else
+    echo -e "${RED}❌ Failed: $SRC${RESET}"
+    return 1
+  fi
+}
+
+# 🧮 generate_md5 DEST
+# Creates per-file .md5 checksum files for every file in the given destination (if enabled).
+generate_md5() {
+  local DEST="$1"
+  if [ "$CREATE_PER_FILE_MD5" = true ]; then
+    echo "🧮 Generating .md5 files in: $DEST"
+    find "$DEST" -type f ! -name "*.md5" -exec md5sum "{}" \; \
+      | while read -r hash file; do
+          echo "$hash  $(basename \"$file\")" > "$file.md5"
+        done
+  fi
+}
+
+# ✅ verify_and_retry SRC DEST SRC_PATH CHECK_FLAG
+# Verifies a previously synced folder using rclone check.
+# On failure, it retries each failed file individually up to MAX_RETRY_COUNT times.
+verify_and_retry() {
+  local SRC="$1"
+  local DEST="$2"
+  local SRC_PATH="$3"
+  local CHECK_FLAG="$4"
+
+  local CHECK_LOG=$(mktemp)
+  ionice -c2 -n7 nice -n10 rclone check "$SRC" "$DEST" $CHECK_FLAG 2>&1 | tee -a "$LOG_FILE" | tee "$CHECK_LOG"
+
+  grep -E 'ERROR.*(not found|sizes differ|hash differ)' "$CHECK_LOG" | awk -F: '{print $2}' | sed 's/^\s*//' | while read -r FILE; do
+    local FILE_REL="${FILE#${SRC_PATH}/}"
+    local FILE_FULL="$SRC/$FILE_REL"
+    local FILE_LOCAL="$DEST/$FILE_REL"
+
+    echo "🔁 Retrying: $FILE_REL"
+    for ((i=1; i<=MAX_RETRY_COUNT; i++)); do
+      echo "  🔄 Attempt $i/$MAX_RETRY_COUNT..."
+      ionice -c2 -n7 nice -n10 rclone copy "$FILE_FULL" "$(dirname \"$FILE_LOCAL\")" --create-empty-src-dirs $(build_rclone_flags) >> "$LOG_FILE" 2>&1
+      if ionice -c2 -n7 nice -n10 rclone check "$FILE_FULL" "$FILE_LOCAL" $CHECK_FLAG >> "$LOG_FILE" 2>&1; then
+        echo "✅ Verified after retry: $FILE_REL"
+        break
+      elif (( i == MAX_RETRY_COUNT )); then
+        echo -e "${RED}❌ Retry failed: $FILE_REL${RESET}"
+      fi
+    done
+  done
+  rm -f "$CHECK_LOG"
+}
+# ┌───────────────────────────────┐
+# │           🚀 MAIN             │
+# └───────────────────────────────┘
+
+# 📜 Create timestamped log file for this sync session
+LOG_FILE="$GAMES_LOCAL_PATH/sync-$(date +%F_%H-%M-%S).log"
+
+# ⏱ Start a timer to track how long the script takes (used with $TIMER toggle)
+SECONDS=0
+
+# ⚙️ Build core rclone flags based on enabled toggles
+RCLONE_FLAGS=$(build_rclone_flags)
+
+# 🧹 Build include/exclude filter list for ROM content
+FILTERS=$(build_filters)
+
+# ┌──────────────────────────────────────────────┐
+# │         🔑 Sync BIOS and Disc Keys           │
+# └──────────────────────────────────────────────┘
+# Loops through all BIOS_PATHS and DISC_KEYS_PATHS
+# and runs sync + optional verification for each.
+
+for entry in "${BIOS_PATHS[@]}" "${DISC_KEYS_PATHS[@]}"; do
+  # Extract remote and local paths from :::-delimited entry
+  SRC="$REMOTE_NAME:${entry%%:::*}"                      # Remote source path
+  DEST="$GAMES_LOCAL_PATH/${entry##*:::}"                # Local destination
+
+  # Run sync, and track failures for retry script
+  if ! sync_path "$SRC" "$DEST" "$RCLONE_FLAGS"; then
+    FAILED_EXTRAS+=("$SRC")
+  fi
+
+  # Run post-sync verification if enabled
+  if [ "$VERIFY_POST_SYNC" = true ]; then
+    FLAG="--size-only"
+    [ "$USE_CHECKSUM" = true ] && FLAG="--checksum"
+    verify_and_retry "$SRC" "$DEST" "${entry%%:::*}" "$FLAG"
+  fi
+done
+
+# ┌──────────────────────────────────────────────┐
+# │             🎮 Sync ROM Systems              │
+# └──────────────────────────────────────────────┘
+# Loops through each entry in SYSTEMS array,
+# applies filters, and syncs + verifies each.
+
+for system in "${SYSTEMS[@]}"; do
+  SRC="$REMOTE_NAME:${system%%:::*}"                      # Remote source path
+  DEST="$GAMES_LOCAL_PATH/${system##*:::}"                # Local destination
+
+  # Sync system with include/exclude filters applied
+  if ! sync_path "$SRC" "$DEST" "$RCLONE_FLAGS $FILTERS"; then
+    FAILED_SYSTEMS+=("$SRC")                              # Track failure
+  fi
+
+  # Run post-sync verification if enabled
+  if [ "$VERIFY_POST_SYNC" = true ]; then
+    FLAG="--size-only"
+    [ "$USE_CHECKSUM" = true ] && FLAG="--checksum"
+    verify_and_retry "$SRC" "$DEST" "${system%%:::*}" "$FLAG"
+  fi
+done
+
+# -----------------------------
+# 📋 FINAL SUMMARY OUTPUT
+# This section prints a summary of the sync run to the terminal and log.
+# -----------------------------
+
+# Print summary header
+echo -e "\n📋 ${GREEN}Summary:${RESET}" | tee -a "$LOG_FILE"
+
+# Show BIOS and Disc Key sync results
+echo -e "🔑 BIOS/Keys: $EXTRA_SUCCESS_COUNT success, $EXTRA_FAIL_COUNT failed" | tee -a "$LOG_FILE"
+
+# Show ROM system sync results
+echo -e "🎮 Systems : $SYSTEM_SUCCESS_COUNT success, $SYSTEM_FAIL_COUNT failed" | tee -a "$LOG_FILE"
+
+# Notify if retry script generation was disabled by config
+[ "$CREATE_RETRY_SCRIPTS" = false ] && echo -e "🔁 Retry script generation is disabled." | tee -a "$LOG_FILE"
+
+# Notify that old logs were pruned based on RETENTION_DAYS setting
+echo -e "🗑️  Logs older than $RETENTION_DAYS days cleaned up" | tee -a "$LOG_FILE"
+
+# Warn if DRY_RUN was active (nothing was actually synced)
+[ "$DRY_RUN" = true ] && echo -e "${RED}⚠ DRY_RUN is enabled. No files were copied.\n🔜 Set DRY_RUN=false when you're ready to sync for real.${RESET}" | tee -a "$LOG_FILE"
+
+# Show script runtime duration if TIMER is enabled
+[ "$TIMER" = true ] && echo -e "⏱️ Duration: $((SECONDS / 60))m $((SECONDS % 60))s" | tee -a "$LOG_FILE"
+
+# Final success message
+echo -e "\n🏎️ ${GREEN}All sync operations complete.${RESET}" | tee -a "$LOG_FILE"
+
+# Output the full log file path
+echo -e "📝 Log file saved to: $LOG_FILE" | tee -a "$LOG_FILE"
