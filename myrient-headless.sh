@@ -13,15 +13,20 @@
 
 DRY_RUN=false              # If true, performs a dry run (no actual file transfers)
 TIMER=true                 # If true, shows the script duration at the end
-ONLY_NEW=true              # If true, skips files that already exist locally
+ONLY_NEW=false             # If true, skips files that already exist locally
 FORCE_OVERWRITES=false     # If true, overwrites existing files regardless of timestamps
-IGNORE_TIMES=false        # Force rclone to re-evaluate all files (disables timestamp-based skip)
+IGNORE_TIMES=true          # If True, force rclone to re-evaluate all files (disables timestamp-based skip)
+SKIP_VERIFIED_FILES=false  # If true, skips rechecking files that were already verified
+
 VERIFY_POST_SYNC=true      # If true, runs post-sync verification using rclone check
-USE_CHECKSUM=false         # If true, uses --checksum (hash check); if false, uses --size-only
-SKIP_VERIFIED_FILES=true   # If true, skips rechecking files that were already verified
+USE_CHECKSUM=true          # If true, uses --checksum (hash check); if false, uses --size-only
+SHOW_HASHES=true           # If true, shows hash next to each file during sync/verification
+CREATE_PER_FILE_MD5=true   # If true, generates a .md5 file next to each downloaded file
+
 MAX_RETRY_COUNT=3          # Number of times to retry a failed verification before giving up
 RETENTION_DAYS=30          # How many days to keep old log files
 CREATE_RETRY_SCRIPTS=true  # If true, saves failed paths into retry scripts
+
 
 # ┌────────────────────────────────────┐
 # │             📁 PATHS               │
@@ -36,8 +41,8 @@ REMOTE_NAME="myrient"                       # Name of the rclone remote pointing
 
 STREAMS=4               # Number of parallel streams per file (multi-threaded transfers)
 CUTOFF=200              # File size (in MiB) cutoff to enable multi-threaded transfers
-TRANSFERS=8             # Number of files to transfer in parallel
-CHECKERS=4              # Number of checkers to run in parallel (for verification)
+TRANSFERS=4             # Number of files to transfer in parallel
+CHECKERS=8              # Number of checkers to run in parallel (for verification)
 RETRIES=10              # Number of retry attempts for transfers that fail
 LOW_LEVEL_RETRIES=10    # Number of retries for low-level errors like network issues
 
@@ -266,7 +271,7 @@ BIOS_PATHS=(
 #   "TOSEC-ISO/SNK/Neo-Geo CD/Firmware/:::TOSEC-ISO/SNK/Neo-Geo CD/Firmware"
 #   "TOSEC/Radica/Arcade Legends & Play TV Legends/Firmware/:::TOSEC/Radica/Arcade Legends & Play TV Legends/Firmware"
 #   "TOSEC/Sharp/MZ-800 & MZ-1500/Firmware/:::TOSEC/Sharp/MZ-800 & MZ-1500/Firmware"
-  "No-Intro/Sega - Dreamcast (Visual Memory Unit)/:::TOSEC/Sharp/MZ-800 & MZ-1500/Firmware"
+  "No-Intro/Sega - Dreamcast (Visual Memory Unit)/:::No-Intro/sega_dreamcast_visual_memory_unit"
 )
 
 # ┌─────────────────────────────────────────────────────────────────────┐
@@ -433,12 +438,22 @@ for entry in "${EXTRAS[@]}"; do
   echo "------------------------------------------"
 
   # Run rclone copy command and log output
-  if ! ionice -c2 -n7 nice -n10 rclone copy $RCLONE_FLAGS "$SRC" "$DEST" 2>&1 | tee -a "$LOG_FILE"; then
-    echo -e "${RED}❌ Failed: $SRC${RESET}" | tee -a "$LOG_FILE"
-    ((EXTRA_FAIL_COUNT++))                 # Increment fail count
-    FAILED_EXTRAS+=("$SRC")                # Save path to retry list
+  if ionice -c2 -n7 nice -n10 rclone copy $RCLONE_FLAGS "$SRC" "$DEST" 2>&1 | tee -a "$LOG_FILE"; then
+    ((EXTRA_SUCCESS_COUNT++))  # Increment success count
+
+    # Optional per-file .md5 generation
+    if [ "$CREATE_PER_FILE_MD5" = true ]; then
+      echo "🧮 Generating .md5 files in: $DEST"
+      ionice -c2 -n7 nice -n10 find "$DEST" -type f ! -name "*.md5" -exec md5sum "{}" \; \
+        | while read -r hash file; do
+            echo "$hash  $(basename "$file")" > "$file.md5"
+          done
+    fi
+
   else
-    ((EXTRA_SUCCESS_COUNT++))             # Increment success count
+    echo -e "${RED}❌ Failed: $SRC${RESET}" | tee -a "$LOG_FILE"
+    ((EXTRA_FAIL_COUNT++))     # Increment fail count
+    FAILED_EXTRAS+=("$SRC")    # Save path to retry list
   fi
 done
 
@@ -516,9 +531,9 @@ FAILED_SYSTEMS=()
 
 # Loop through each system defined in the SYSTEMS array
 for system in "${SYSTEMS[@]}"; do
-  SRC="$REMOTE_NAME:${system%%:::*}"             # Extract remote path before ::: (e.g. myrient:No-Intro/3DO...)
-  DEST="$GAMES_LOCAL_PATH/${system##*:::}"       # Extract local path after ::: (e.g. /mnt/.../3do/roms/)
-  mkdir -p "$DEST"                               # Make sure destination directory exists
+  SRC="$REMOTE_NAME:${system%%:::*}"             # Extract remote path before :::
+  DEST="$GAMES_LOCAL_PATH/${system##*:::}"       # Extract local path after :::
+  mkdir -p "$DEST"                               # Ensure destination directory exists
 
   # Show sync header for current system
   echo -e "\n=========================================="
@@ -526,13 +541,23 @@ for system in "${SYSTEMS[@]}"; do
   echo "⬇ To: $DEST"
   echo "=========================================="
 
-  # Sync the system using rclone + filters, and log the output
-  if ! ionice -c2 -n7 nice -n10 rclone copy $RCLONE_FLAGS "${FILTERS[@]}" "$SRC" "$DEST" 2>&1 | tee -a "$LOG_FILE"; then
-    echo -e "${RED}❌ Failed: $SRC${RESET}" | tee -a "$LOG_FILE"
-    ((SYSTEM_FAIL_COUNT++))                     # Increment failure count
-    FAILED_SYSTEMS+=("$SRC")                    # Track system for retry script
+  # Run rclone copy and log output
+  if ionice -c2 -n7 nice -n10 rclone copy $RCLONE_FLAGS "${FILTERS[@]}" "$SRC" "$DEST" 2>&1 | tee -a "$LOG_FILE"; then
+    ((SYSTEM_SUCCESS_COUNT++))                   # Success count
+
+    # Optional per-file .md5 generation
+    if [ "$CREATE_PER_FILE_MD5" = true ]; then
+      echo "🧮 Generating .md5 files in: $DEST"
+      ionice -c2 -n7 nice -n10 find "$DEST" -type f ! -name "*.md5" -exec md5sum "{}" \; \
+        | while read -r hash file; do
+            echo "$hash  $(basename "$file")" > "$file.md5"
+          done
+    fi
+
   else
-    ((SYSTEM_SUCCESS_COUNT++))                  # Increment success count
+    echo -e "${RED}❌ Failed: $SRC${RESET}" | tee -a "$LOG_FILE"
+    ((SYSTEM_FAIL_COUNT++))                     # Failure count
+    FAILED_SYSTEMS+=("$SRC")                    # Track for retry
   fi
 done
 
