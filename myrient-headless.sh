@@ -379,7 +379,17 @@ fi
 # Trap Ctrl+C / SIGTERM and cleanly exit any child jobs.
 # Also prune old logs per RETENTION_DAYS.
 # -----------------------------
-trap 'echo -e "\n${RED}⛔ Interrupted. Exiting...${RESET}"; pkill -P $$; exit 1' SIGINT SIGTERM
+CLEANED_UP=false
+
+cleanup() {
+  [ "$CLEANED_UP" = true ] && return
+  CLEANED_UP=true
+  echo -e "\n${RED}⛔ Cleaning up background jobs...${RESET}" | tee -a "$LOG_FILE"
+  pkill -P $$
+#  pkill -f rclone  # Optional: Kill any rclone still running
+#  pkill -f md5sum  # Optional: Kill leftover checksum jobs
+}
+trap cleanup SIGINT SIGTERM EXIT ERR
 
 mkdir -p "$GAMES_LOCAL_PATH"
 
