@@ -67,7 +67,7 @@ SYSTEMS=(
 # 📦 INTERNET ARCHIVE COLLECTIONS
 # -----------------------------
 
-  "Internet Archive/rompacker/mame-chds-roms-extras-complete/:::Internet_Archive/rompacker/mame-chds-roms-extras-complete"
+  "Internet Archive/rompacker/mame-chds-roms-extras-complete/:::arcade/mame-chds-roms-extras-complete"
   
 # -----------------------------
 # 📦 OFFICIAL NO-INTRO COLLECTIONS
