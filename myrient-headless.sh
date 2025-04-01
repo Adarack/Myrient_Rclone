@@ -297,15 +297,36 @@ DISC_KEYS_PATHS=(
 # │            ✅ HEADLESS MODE START            │
 # └──────────────────────────────────────────────┘
 
-# ANSI color codes for console output
-GREEN="\e[32m"  # Green text (used for success messages)
-RED="\e[31m"    # Red text (used for error messages)
-RESET="\e[0m"   # Resets terminal text formatting to default
-
 # Logging
 LOG_FILE="$GAMES_LOCAL_PATH/sync-$(date +%F_%H-%M-%S).log"   # Timestamped log file for this sync session
 VERIFIED_LOG="$GAMES_LOCAL_PATH/.verified_files.log"         # Hidden log to track already-verified files
 touch "$VERIFIED_LOG"  # Ensure the verified log exists before proceeding
+
+# Function to send Unraid notifications
+send_unraid_notification() {
+  local type="${1^^}"  # Convert to uppercase for consistency (INFO, WARNING, ERROR)
+  local message="$2"
+
+  local icon="normal"
+  case "$type" in
+    "INFO") icon="normal" ;;
+    "WARNING") icon="warning" ;;
+    "ERROR"|"CRITICAL") icon="alert" ;;
+    *) icon="normal" ;;
+  esac
+
+  local notify_cmd="/usr/local/emhttp/webGui/scripts/notify"
+  if [[ -x "$notify_cmd" ]]; then
+    $notify_cmd -e "MyrientSync" -s "$type" -d "$message" -i "$icon"
+  else
+    echo "⚠ $notify_cmd is not executable. Notification skipped."
+  fi
+}
+
+# ANSI color codes for console output
+GREEN="\e[32m"  # Green text (used for success messages)
+RED="\e[31m"    # Red text (used for error messages)
+RESET="\e[0m"   # Resets terminal text formatting to default
 
 SECONDS=0  # Start timer (used for duration tracking with the $TIMER toggle)
 
@@ -668,10 +689,21 @@ if [ "$CREATE_RETRY_SCRIPTS" = true ] && [ ${#FAILED_SYSTEMS[@]} -gt 0 ]; then
   echo -e "🔁 Retry script saved to: $RETRY_FILE" | tee -a "$LOG_FILE"
 fi
 
+if [ "$CREATE_RETRY_SCRIPTS" = true ]; then
+  [ ${#FAILED_SYSTEMS[@]} -gt 0 ] && send_unraid_notification "WARNING" "Retry script created for failed system syncs."
+  [ ${#FAILED_EXTRAS[@]} -gt 0 ] && send_unraid_notification "WARNING" "Retry script created for failed BIOS/Disc Key syncs."
+fi
+
 # -----------------------------
 # 📋 FINAL SUMMARY OUTPUT
 # This section prints a summary of the sync run to the terminal and log.
 # -----------------------------
+
+if (( SYSTEM_FAIL_COUNT > 0 || EXTRA_FAIL_COUNT > 0 )); then
+  send_unraid_notification "WARNING" "Sync completed with some failures. Check logs."
+else
+  send_unraid_notification "INFO" "All ROMs, BIOS, and disc keys synced successfully."
+fi
 echo -e "\n📋 ${GREEN}Summary:${RESET}" | tee -a "$LOG_FILE"
 
 # Show BIOS/Disc Key results
