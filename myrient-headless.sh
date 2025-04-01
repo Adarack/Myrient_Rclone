@@ -700,9 +700,15 @@ fi
 # -----------------------------
 
 if (( SYSTEM_FAIL_COUNT > 0 || EXTRA_FAIL_COUNT > 0 )); then
-  send_unraid_notification "WARNING" "Sync completed with some failures. Check logs."
+  send_unraid_notification "WARNING" "Sync completed with some failures. Check logs.
+  BIOS/Keys: $EXTRA_SUCCESS_COUNT OK, $EXTRA_FAIL_COUNT failed
+  ROMs     : $SYSTEM_SUCCESS_COUNT OK, $SYSTEM_FAIL_COUNT failed
+  Duration : $((SECONDS / 60))m $((SECONDS % 60))s"
 else
-  send_unraid_notification "INFO" "All ROMs, BIOS, and disc keys synced successfully."
+  send_unraid_notification "INFO" "All ROMs, BIOS, and disc keys synced successfully.
+  BIOS/Keys: $EXTRA_SUCCESS_COUNT OK, $EXTRA_FAIL_COUNT failed
+  ROMs     : $SYSTEM_SUCCESS_COUNT OK, $SYSTEM_FAIL_COUNT failed
+  Duration : $((SECONDS / 60))m $((SECONDS % 60))s"
 fi
 echo -e "\n📋 ${GREEN}Summary:${RESET}" | tee -a "$LOG_FILE"
 
